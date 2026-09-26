@@ -6614,6 +6614,59 @@ struct test_mul_mat_vec_fusion : public test_case {
     }
 };
 
+// A quantized mat-vec on a norm output, after another mat-vec on a different activation, the second one optionally
+// fused with a gate. The CUDA backend quantizes each activation into a pool block that the next mat-vec reuses, and
+// the quantize kernel lets its successor launch early under programmatic dependent launch (sm_90 and newer), so a
+// mat-vec kernel that reads its activations without waiting on the quantize kernel can see the first mat-vec's
+// activations, laid out for a different K.
+struct test_mul_mat_vec_dep : public test_case {
+    const ggml_type type;
+    const int64_t m;
+    const int64_t n;
+    const int64_t k_a;
+    const int64_t k_b;
+    const bool with_gate;
+    const int64_t norm_len = 1 << 22; // one row: a single long-running block
+
+    test_mul_mat_vec_dep(ggml_type type, int64_t m, int64_t n, int64_t k_a, int64_t k_b, bool with_gate)
+        : type(type), m(m), n(n), k_a(k_a), k_b(k_b), with_gate(with_gate) {}
+
+    std::string vars() override {
+        return VARS_TO_STR6(type, m, n, k_a, k_b, with_gate);
+    }
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "MUL_MAT_VEC_DEP";
+    }
+
+    bool run_whole_graph() override { return true; }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * w_a = ggml_new_tensor_2d(ctx, type, k_a, m);
+        ggml_tensor * x_a = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k_a, n);
+        ggml_tensor * w_b = ggml_new_tensor_2d(ctx, type, k_b, m);
+        ggml_tensor * y   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, norm_len, 1);
+
+        ggml_tensor * a   = ggml_mul_mat(ctx, w_a, x_a);
+        ggml_tensor * yn  = ggml_rms_norm(ctx, y, 1e-6f);
+        ggml_tensor * x_b = ggml_view_2d(ctx, yn, k_b, n, k_b*sizeof(float), 0);
+        ggml_tensor * b   = ggml_mul_mat(ctx, w_b, x_b);
+        if (with_gate) {
+            ggml_tensor * w_g = ggml_new_tensor_2d(ctx, type, k_b, m);
+            b = ggml_glu_split(ctx, ggml_mul_mat(ctx, w_g, x_b), b, GGML_GLU_OP_SWIGLU);
+        }
+
+        ggml_tensor * out = ggml_add(ctx, a, b);
+        ggml_set_name(out, "out");
+        return out;
+    }
+
+    double max_nmse_err() override {
+        return with_gate ? 5e-3 : 5e-4;
+    }
+};
+
 // GGML_OP_SUM
 struct test_sum : public test_case {
     const ggml_type type;
@@ -10215,6 +10268,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_mul_mat_vec_fusion(GGML_TYPE_PTQ1_0, GGML_GLU_OP_SWIGLU, 1, 64, k,
             false, 1, 1, false, false, true, false, {1, 1}));
     }
+
+    // PTQ1_0 mat-vec on a norm output, after another one on a different activation (Bonsai 2 ffn_down, then a K = 5120 projection)
+    for (int64_t n : {1, 2, 3, 4}) {
+        test_cases.emplace_back(new test_mul_mat_vec_dep(GGML_TYPE_PTQ1_0, 8192, n, 17408, 5120, false));
+    }
+    test_cases.emplace_back(new test_mul_mat_vec_dep(GGML_TYPE_PTQ1_0, 8192, 1, 17408, 5120, true));
 
     for (auto gate : {GATING_FUNC_SOFTMAX, GATING_FUNC_SIGMOID, GATING_FUNC_SOFTMAX_WEIGHT, GATING_FUNC_SQRT_SOFTPLUS}) {
         for (bool with_norm : {false, true}) {
