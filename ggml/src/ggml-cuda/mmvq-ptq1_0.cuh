@@ -313,6 +313,10 @@ static __global__ void mul_mat_vec_ptq1_0_pt(
         ycol[j] = (const char *) ((const block_q8_1 *) vy + j*stride_col_y);
     }
 
+    // ggml_cuda_kernel_launch uses programmatic dependent launch on sm_90 and newer, so this grid can start
+    // while the kernel that writes vy is still running: no global memory access before this wait
+    ggml_cuda_pdl_sync();
+
     const int n_items = (rows_per_cta / ROWS) * bpr;
     for (int idx = tid; idx < n_items; idx += PTQ1_0_PT_THREADS) {
         const int rg  = fastdiv((uint32_t) idx, bpr_fd); // row group within the CTA
