@@ -296,7 +296,12 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
         return false;
     }
 #if !defined(GGML_USE_HIP)
-    if (type == GGML_TYPE_PTQ1_0 && GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_TURING) {
+    // Pascal (sm_61) 放行 / Pascal (sm_61) admission:
+    // The PT mat-vec path only needs __dp4a, which is a hardware instruction from
+    // GGML_CUDA_CC_DP4A (610) on. The kernel uses no __syncwarp/__shfl_sync and no
+    // PDL, so it compiles and runs unchanged on sm_61. The Turing gate was written
+    // for the cards the author had, not for a hardware requirement.
+    if (type == GGML_TYPE_PTQ1_0 && GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_DP4A) {
         // the PT mat-vec path shares the weight decode across columns and stays ahead of the
         // MMQ tile path up to 4 columns; from 5 on the branch-free MMQ tile loader is faster
         // (RTX 3060, K = 5120 shapes: a batch of 8 in 64.4 ms through MMQ against 112.7 ms
