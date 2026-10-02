@@ -1,0 +1,87 @@
+name: Build PTQ1_0 sm_61 (Pascal)
+
+# 手动触发 / manual trigger only.
+# 为 GTX 10 系 (sm_61) 编译带 PTQ1_0 专用内核的 Windows CUDA 版本。
+# Builds the Windows CUDA binaries for Pascal (sm_61) with the PTQ1_0
+# PT mat-vec path enabled (see ggml/src/ggml-cuda/mmvq.cu).
+#
+# 用法: 仓库 Actions 页面 -> 本 workflow -> Run workflow
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON"
+
+jobs:
+  windows-cuda-sm61:
+    runs-on: windows-2022
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: windows-cuda-sm61
+          variant: ccache
+          evict-old-files: 1d
+
+      - name: Install Cuda Toolkit
+        uses: ./.github/actions/windows-setup-cuda
+        with:
+          cuda_version: '12.4'
+          cuda_arch: x64
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_CUDA=ON ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_CPU_ALL_VARIANTS=ON ^
+            -DLLAMA_BUILD_BORINGSSL=ON ^
+            -DCMAKE_CUDA_ARCHITECTURES=61-real;75-virtual ^
+            -DCMAKE_CUDA_FLAGS="-diag-suppress=221" ^
+            %CMAKE_ARGS%
+          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+          cmake --build build --config Release -j %NINJA_JOBS%
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          7z a -snl llama-${{ steps.tag.outputs.name }}-bin-win-cuda-12.4-x64-sm61.zip .\build\bin\Release\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-win-cuda-12.4-x64-sm61.zip
+          name: llama-bin-win-cuda-sm61.zip
+
+      - name: Pack Cuda runtime
+        run: |
+          echo "Cuda install location: ${{ env.CUDA_PATH }}"
+          $dst='.\build\bin\cudart\'
+          robocopy "${{env.CUDA_PATH}}\bin" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          robocopy "${{env.CUDA_PATH}}\lib" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          7z a cudart-llama-bin-win-cuda-12.4-x64-sm61.zip $dst\*
+
+      - name: Upload cudart
+        uses: actions/upload-artifact@v6
+        with:
+          path: cudart-llama-bin-win-cuda-12.4-x64-sm61.zip
+          name: cudart-llama-bin-win-cuda-sm61.zip
