@@ -373,7 +373,9 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
     switch (type) {
 #if !defined(GGML_USE_HIP)
         case GGML_TYPE_PTQ1_0:
-            mmq_supported = turing_mma_available(cc);
+            // Pascal (sm_61) 放行 / Pascal admission: the dp4a tile path only needs __dp4a,
+            // which is a hardware instruction from GGML_CUDA_CC_DP4A (610) on.
+            mmq_supported = GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_DP4A;
             break;
 #endif
         case GGML_TYPE_Q1_0:
